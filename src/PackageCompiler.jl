@@ -730,7 +730,7 @@ compiler.
 - `force::Bool`: Remove the folder `compiled_app` if it exists before creating the app.
 
 - `include_lazy_artifacts::Bool`: if lazy artifacts should be included in the bundled artifacts,
-  defaults to `true`.
+  defaults to `false`.
 
 ### Advanced keyword arguments
 
@@ -747,7 +747,7 @@ function create_app(package_dir::String,
                     force=false,
                     c_driver_program::String=joinpath(@__DIR__, "embedding_wrapper.c"),
                     cpu_target::String=default_app_cpu_target(),
-                    include_lazy_artifacts::Bool=true)
+                    include_lazy_artifacts::Bool=false)
 
     _create_app(package_dir, app_dir, app_name, precompile_execution_file,
         precompile_statements_file, incremental, filter_stdlibs, audit, force, cpu_target;
@@ -841,7 +841,7 @@ compiler.
    Linux/UNIX).
 
 - `include_lazy_artifacts::Bool`: if lazy artifacts should be included in the bundled artifacts,
-  defaults to `true`.
+  defaults to `false`.
 
 ### Advanced keyword arguments
 
@@ -861,7 +861,7 @@ function create_library(package_dir::String,
                         version=nothing,
                         compat_level="major",
                         cpu_target::String=default_app_cpu_target(),
-                        include_lazy_artifacts::Bool=true)
+                        include_lazy_artifacts::Bool=false)
 
     julia_init_h_file::String=joinpath(@__DIR__, "julia_init.h")
 
@@ -934,7 +934,7 @@ function _create_app(package_dir::String,
     mkpath(dest_dir)
 
     bundle_julia_libraries(dest_dir, library_only)
-    bundle_artifacts(ctx, dest_dir, library_only; include_lazy_artifacts=include_lazy_artifacts)
+    bundle_artifacts(ctx, dest_dir, library_only; include_lazy_artifacts)
 
     library_only && bundle_headers(dest_dir, header_files)
 
@@ -1031,7 +1031,7 @@ function bundle_julia_libraries(dest_dir, library_only)
     return
 end
 
-function bundle_artifacts(ctx, dest_dir, library_only; include_lazy_artifacts=true)
+function bundle_artifacts(ctx, dest_dir, library_only; include_lazy_artifacts::Bool)
     @debug "bundling artifacts..."
 
     pkgs = load_all_deps(ctx)
