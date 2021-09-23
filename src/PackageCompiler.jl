@@ -5,7 +5,7 @@ using Libdl: Libdl
 using Pkg: Pkg
 using UUIDs: UUID, uuid1
 
-export create_sysimage, create_app, create_library, audit_app, restore_default_sysimage
+export create_sysimage, create_app, create_library, audit_app
 
 include("juliaconfig.jl")
 
@@ -80,14 +80,6 @@ function march()
         return nothing
     else
         return nothing
-    end
-end
-
-# Overwriting an open file is problematic in Windows
-# so move it out of the way first
-function move_default_sysimage_if_windows()
-    if Sys.iswindows() && isfile(default_sysimg_path())
-        mv(default_sysimg_path(), tempname())
     end
 end
 
@@ -363,10 +355,6 @@ function create_sysimg_object_file(object_file::String, packages::Vector{String}
     run(cmd)
 end
 
-default_sysimg_path() = abspath(Sys.BINDIR, "..", "lib", "julia", "sys." * Libdl.dlext)
-default_sysimg_name() = basename(default_sysimg_path())
-backup_default_sysimg_path() = default_sysimg_path() * ".backup"
-backup_default_sysimg_name() = basename(backup_default_sysimg_path())
 
 # TODO: Also check UUIDs for stdlibs, not only names
 gather_stdlibs_project(project::String) = gather_stdlibs_project(create_pkg_context(project))
@@ -406,9 +394,7 @@ by setting the environment variable `JULIA_CC` to a path to a compiler
 
 ### Keyword arguments:
 
-- `sysimage_path::Union{String,Nothing}`: The path to where
-   the resulting sysimage should be saved. If set to `nothing` the keyword argument
-   `replace_default` needs to be set to `true`.
+- `sysimage_path::String`: The path to where the resulting sysimage should be saved.
 
 - `project::String`: The project that should be active when the sysimage is created,
    defaults to the current active project.
@@ -424,9 +410,6 @@ by setting the environment variable `JULIA_CC` to a path to a compiler
 
 - `filter_stdlibs::Bool`: If `true`, only include stdlibs that are in the project file.
    Defaults to `false`, only set to `true` if you know the potential pitfalls.
-
-- `replace_default::Bool`: If `true`, replaces the default system image which is automatically
-   used when Julia starts. To replace with the one Julia ships with, use [`restore_default_sysimage()`](@ref)
 
 - `julia_init_c_file::String`: File to include in the system image with functions for
    initializing julia from external code.  Used when creating a shared library.
@@ -447,13 +430,12 @@ by setting the environment variable `JULIA_CC` to a path to a compiler
 - `script::String`: Path to a file that gets executed in the `--output-o` process.
 """
 function create_sysimage(packages::Union{Symbol, Vector{Symbol}}=Symbol[];
-                         sysimage_path::Union{String,Nothing}=nothing,
+                         sysimage_path::String,
                          project::String=dirname(active_project()),
                          precompile_execution_file::Union{String, Vector{String}}=String[],
                          precompile_statements_file::Union{String, Vector{String}}=String[],
                          incremental::Bool=true,
                          filter_stdlibs=false,
-                         replace_default::Bool=false,
                          base_sysimage::Union{Nothing, String}=nothing,
                          isapp::Bool=false,
                          julia_init_c_file=nothing,
@@ -465,19 +447,7 @@ function create_sysimage(packages::Union{Symbol, Vector{Symbol}}=Symbol[];
 
     precompile_statements_file = abspath.(precompile_statements_file)
     precompile_execution_file = abspath.(precompile_execution_file)
-    if replace_default==true
-        if sysimage_path !== nothing
-            error("cannot specify `sysimage_path` when `replace_default` is `true`")
-        end
-    end
-    if sysimage_path === nothing
-        if replace_default == false
-            error("`sysimage_path` cannot be `nothing` if `replace_default` is `false`")
-        end
-        # We will replace the default sysimage so just put it somewhere for now
-        tmp = mktempdir()
-        sysimage_path = joinpath(tmp, string("sys.", Libdl.dlext))
-    end
+  
     if filter_stdlibs && incremental
         error("must use `incremental=false` to use `filter_stdlibs=true`")
     end
@@ -530,16 +500,7 @@ function create_sysimage(packages::Union{Symbol, Vector{Symbol}}=Symbol[];
                                    version,
                                    soname)
 
-    # Maybe replace default sysimage
-    if replace_default
-        if !isfile(backup_default_sysimg_path())
-            @debug "making a backup of default sysimg"
-            cp(default_sysimg_path(), backup_default_sysimg_path())
-        end
-        move_default_sysimage_if_windows()
-        mv(sysimage_path, default_sysimg_path(); force=true)
-        @info "PackageCompiler: default sysimg replaced, restart Julia for the new sysimg to be in effect"
-    end
+
     rm(object_file; force=true)
     return nothing
 end
@@ -622,21 +583,6 @@ function create_sysimg_from_object_file(input_object::String,
     return nothing
 end
 
-"""
-    restore_default_sysimage()
-
-Restores the default system image to the one that Julia shipped with.
-Useful after running [`create_sysimage`](@ref) with `replace_default=true`.
-"""
-function restore_default_sysimage()
-    if !isfile(backup_default_sysimg_path())
-        error("did not find a backup sysimg")
-    end
-    move_default_sysimage_if_windows()
-    mv(backup_default_sysimg_path(), default_sysimg_path(); force=true)
-    @info "PackageCompiler: default sysimg restored, restart Julia for the new sysimg to be in effect"
-    return nothing
-end
 
 const REQUIRES = "Requires" => UUID("ae029012-a4dd-5104-9daa-d747884805df")
 
@@ -1019,9 +965,9 @@ end
 function bundle_julia_libraries(dest_dir, library_only)
     app_libdir = joinpath(dest_dir, Sys.isunix() ? "lib" : "bin")
     cp(julia_libdir(), app_libdir; force=true)
-    # We do not want to bundle the sysimg (nor the backup sysimage):
-    rm(joinpath(app_libdir, "julia", default_sysimg_name()); force=true)
-    rm(joinpath(app_libdir, "julia", backup_default_sysimg_name()); force=true)
+    # We do not want to bundle the sysimg
+    default_sysimg_name = "sys." * Libdl.dlext
+    rm(joinpath(app_libdir, "julia", default_sysimg_name); force=true)
     # Remove debug symbol libraries
     if Sys.isapple()
         v = string(VERSION.major, ".", VERSION.minor)
