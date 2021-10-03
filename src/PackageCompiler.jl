@@ -9,6 +9,7 @@ using UUIDs: UUID, uuid1
 export create_sysimage, create_app, create_library, audit_app, restore_default_sysimage
 
 include("juliaconfig.jl")
+include("spinner.jl")
 
 const NATIVE_CPU_TARGET = "native"
 const TLS_SYNTAX = VERSION >= v"1.7.0-DEV.1205" ? `-DNEW_DEFINE_FAST_TLS_SYNTAX` : ``
@@ -379,13 +380,12 @@ function create_sysimg_object_file(object_file::String,
 
     # finally, make julia output the resulting object file
     @debug "creating object file at $object_file"
-    @info "PackageCompiler: creating system image object file, this might take a while..."
 
     julia_code = String(take!(julia_code_buffer))
     cmd = `$(get_julia_cmd()) --cpu-target=$cpu_target $sysimage_build_args
                               --sysimage=$base_sysimage --project=$project --output-o=$(object_file) -e $julia_code`
     @debug "running $cmd"
-    run(cmd)
+    @spin "creating system image object file" run(cmd)
 end
 
 default_sysimg_path() = abspath(Sys.BINDIR, "..", "lib", "julia", "sys." * Libdl.dlext)
@@ -1120,6 +1120,25 @@ function bundle_julia_libraries(dest_dir, library_only)
     return
 end
 
+function recursive_dir_size(path)
+    size = 0
+    try
+        for (root, dirs, files) in walkdir(path)
+            for file in files
+                path = joinpath(root, file)
+                try
+                    size += lstat(path).size
+                catch ex
+                    @error("Failed to calculate size of $path", exception=ex)
+                end
+            end
+        end
+    catch ex
+        @error("Failed to calculate size of $path", exception=ex)
+    end
+    return size
+end
+
 function bundle_artifacts(ctx, dest_dir, library_only; include_lazy_artifacts=true)
     @debug "bundling artifacts..."
 
@@ -1131,8 +1150,17 @@ function bundle_artifacts(ctx, dest_dir, library_only; include_lazy_artifacts=tr
     ctx.env.pkg.path = dirname(ctx.env.project_file)
     push!(pkgs, ctx.env.pkg)
 
+    depot_path = get_depot_path(dest_dir, library_only)
+    artifact_app_path = joinpath(depot_path, "artifacts")
+
+    pretty_byte_str = (size) -> begin
+        bytes, mb = Base.prettyprint_getunits(size, length(Base._mem_units), Int64(1024))
+        return @sprintf("%.3f %s", bytes, Base._mem_units[mb])
+    end
+
     # Collect all artifacts needed for the project
     artifact_paths = Set{String}()
+    total_size = 0
     for pkg in pkgs
         pkg_source_path = source_path(ctx, pkg)
         pkg_source_path === nothing && continue
@@ -1140,7 +1168,7 @@ function bundle_artifacts(ctx, dest_dir, library_only; include_lazy_artifacts=tr
         for f in Pkg.Artifacts.artifact_names
             artifacts_toml_path = joinpath(pkg_source_path, f)
             if isfile(artifacts_toml_path)
-                @debug "bundling artifacts for $(pkg.name)"
+                println("  $(pkg.name):")
                 artifact_dict = Pkg.Artifacts.load_artifacts_toml(artifacts_toml_path)
                 for name in keys(artifact_dict)
                     if !include_lazy_artifacts &&
@@ -1151,25 +1179,26 @@ function bundle_artifacts(ctx, dest_dir, library_only; include_lazy_artifacts=tr
                     end
                     meta = Pkg.Artifacts.artifact_meta(name, artifacts_toml_path)
                     meta === nothing && continue
-                    @debug "  \"$name\""
-                    push!(artifact_paths, Pkg.Artifacts.ensure_artifact_installed(name, artifacts_toml_path))
+
+                    mkpath(artifact_app_path)
+
+                    # Copy the artifacts needed to the app directory
+                    artifact_path = Pkg.Artifacts.ensure_artifact_installed(name, artifacts_toml_path)
+                    path_size = recursive_dir_size(artifact_path)
+                    total_size += path_size
+                  
+                    s = pretty_byte_str(path_size)
+
+                    artifact_name = basename(artifact_path)
+                   
+                    println("    $name [$s]")
+                    cp(artifact_path, joinpath(artifact_app_path, artifact_name))
                 end
                 break
             end
         end
     end
-
-    # Copy the artifacts needed to the app directory
-    depot_path = get_depot_path(dest_dir, library_only)
-    artifact_app_path = joinpath(depot_path, "artifacts")
-
-    if !isempty(artifact_paths)
-        mkpath(artifact_app_path)
-    end
-    for artifact_path in artifact_paths
-        artifact_name = basename(artifact_path)
-        cp(artifact_path, joinpath(artifact_app_path, artifact_name))
-    end
+    println("Total artifact size: ", pretty_byte_str(total_size))
     return
 end
 
