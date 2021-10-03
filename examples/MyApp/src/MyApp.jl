@@ -6,7 +6,7 @@ using Pkg.Artifacts
 
 fooifier_path() = joinpath(artifact"fooifier", "bin", "fooifier" * (Sys.iswindows() ? ".exe" : ""))
 
-function julia_main()
+Base.@ccallable function julia_main()::Cint
     try
         real_main()
     catch
